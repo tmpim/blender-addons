@@ -6,6 +6,7 @@ bl_info = {
 
 import bpy
 import bmesh
+from math import *
 from bpy.props import *
 from bpy.types import Panel, Operator, PropertyGroup
 from mathutils import Vector
@@ -43,7 +44,7 @@ def registerProps():
 
 def unregisterProps():
     bpy.utils.unregister_class(RaycasterList)
-    bpy.utils.register_class(TMP_UL_Interior_List)
+    bpy.utils.unregister_class(TMP_UL_Interior_List)
     del bpy.types.Scene.tmp_seli_ob_data
     del bpy.types.Scene.tmp_seli_ob_data_id
 
@@ -74,7 +75,7 @@ def removeInteriorFaces():
 
     def localToWorld(vec):
         t = vec.to_4d()
-        t.w = 0
+        t.w = 1
         return (current_mesh.matrix_world @ t).to_3d()
 
     # And store all faces inside that selection
@@ -88,6 +89,9 @@ def removeInteriorFaces():
         # Deselect everything...
         mesh.select_all()
 
+    # Get the object depsgraph
+    deps = bpy.context.evaluated_depsgraph_get()
+
     # Switch to object mode to do scene raycasting (doesn't work in edit mode
     # I don't think, got error "has no mesh data to be used for ray casting"
     ops.object.mode_set( mode = 'OBJECT' )
@@ -100,7 +104,7 @@ def removeInteriorFaces():
             direction.normalize()
 
             # Cast a ray from the "camera" position to the face we think is interior
-            result, location, normal, faceIndex, object, matrix = scene.ray_cast( viewLayer, cameraOrigin, direction )
+            result, location, normal, faceIndex, object, matrix = scene.ray_cast( deps, cameraOrigin, direction )
 
             # If the ray actually hit the face, as in the face index from the
             # selection matches the face index from the raycast, then this face
@@ -133,6 +137,7 @@ class RaycastSwitch(Operator):
     bl_idname = 'tmp_seli.raycast_switch'
     bl_label = 'Add Item'
     bl_description = 'Selected objects will be used as raycasting origins'
+    bl_options = {'INTERNAL'}
 
     list_id: IntProperty(default=0)
 
@@ -160,6 +165,7 @@ class FrameSelected(Operator):
     bl_idname = 'tmp_seli.frame_selected'
     bl_label = 'Frame Selected'
     bl_description = 'Go to this object in the viewport'
+    bl_options = {'INTERNAL'}
     
     list_id: IntProperty(default=0)
     
@@ -215,9 +221,13 @@ class SelectInteriorPanel(Panel):
         col.separator()
         col.separator()
         
-        col = col.column(align=True)
-        col.scale_y = 2
-        col.operator("tmp_seli.deselect_external")
+        colB = col.column(align=True)
+        colB.scale_y = 2
+        colB.operator("tmp_seli.deselect_external")
+
+        col = col.column()
+        col.separator()
+        col.operator("tmp_seli.point_cloud")
 
 def get_obs(obs):
     return [ob for ob in obs if ob.type == 'EMPTY']
@@ -241,7 +251,52 @@ class RefreshObData(bpy.types.Operator):
             
         return {'FINISHED'}
 
+class PointCloudOperator(bpy.types.Operator):
+    bl_idname = "tmp_seli.point_cloud"
+    bl_label = "Generate Point Cloud"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    count: bpy.props.IntProperty(name="Count", description="Number of points to generate", default=20, min=1)
+    distance: bpy.props.FloatProperty(name="Distance", description="Distance from the object origin to build the point cloud", default=50, min=0)
+
+    def execute(self, context):
+
+        # Source object
+        bpy.ops.object.empty_add(type='PLAIN_AXES', align='WORLD', location=(0,0,0), scale=(1, 1, 1))
+        bpy.context.object.show_in_front = True
+        src_ob = bpy.context.object
+
+        gr = (sqrt(5) + 1) / 2
+        ga = (2 - gr) * (2*pi)
+        rad = self.distance
+
+        obs = []
+        for i in range(self.count):
+            lat = asin(-1 + 2*i / (self.count + 1))
+            lon = ga * i
+
+            x = rad * cos(lon)*cos(lat)
+            z = rad * sin(lon)*cos(lat)
+            y = rad * sin(lat)
+
+            copy = src_ob.copy()
+            copy.location = Vector((x, y, z))
+            obs.append(copy)
+
+        collection = bpy.context.collection.objects
+        for ob in obs:
+            collection.link(ob)
+        
+        # Get rid of the source at the origin
+        collection.unlink(src_ob)
+
+        return {'FINISHED'}
+
+# test call
+#bpy.ops.object.modal_operator()
+
 def register():
+    bpy.utils.register_class(PointCloudOperator)
     bpy.utils.register_class(FrameSelected)
     bpy.utils.register_class(RaycastSwitch)
     bpy.utils.register_class(RefreshObData)
@@ -251,6 +306,7 @@ def register():
 
 
 def unregister():
+    bpy.utils.unregister_class(PointCloudOperator)
     bpy.utils.unregister_class(FrameSelected)
     bpy.utils.unregister_class(RaycastSwitch)
     bpy.utils.unregister_class(RefreshObData)
